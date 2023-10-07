@@ -4,22 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gofor-little/env"
 	"github.com/sashabaranov/go-openai"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/docs/v1"
 	"google.golang.org/api/option"
 	"google.golang.org/api/slides/v1"
-	"github.com/gofor-little/env"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 var (
-	DEBUG bool
+	DEBUG          bool
 	GOOGLE_API_KEY string
-	OPEN_AI_KEY string
+	OPEN_AI_KEY    string
 )
 
 type SimpleSlide struct {
@@ -29,6 +30,7 @@ type SimpleSlide struct {
 }
 
 type GPTOutline struct {
+	Title  string
 	Slides []SimpleSlide
 }
 
@@ -45,7 +47,7 @@ func init() {
 }
 
 func main() {
-	fmt.Println("Welcome to Doctor Slides!")
+	fmt.Println("Here Comes Doctor Slides!")
 	args := os.Args
 	if len(args) < 2 {
 		fmt.Println("I need a document ID to get started, fool.")
@@ -57,6 +59,7 @@ func main() {
 	textContent := readTextFromDocument(document)
 	outline := getGPTOutline(textContent)
 	parsedOutline := parseGPTOutline(outline)
+	parsedOutline.Title = document.Title
 	writeToSlides(parsedOutline)
 }
 
@@ -108,9 +111,9 @@ func getGPTOutline(content string) string {
 	fmt.Println("Asking GPT for a slides outline")
 	template := `
 	Please use the following document contents in order to build the outline of
-	a slideshow. The slideshow must have at least three slides. Each slide
-	should have a title, at least two content bullet points, and a url for an image. The outline
-	should follow thes format for each slide:
+	a slideshow. The slideshow must have at least three slides, but can have up
+	to 25. Each slide should have a title, at least two content bullet points,
+	and a url for an image. The outline should follow thes format for each slide:
 
 	NEW SLIDE ======
 	Title: The title of the slide here
@@ -120,11 +123,8 @@ func getGPTOutline(content string) string {
 	END SLIDE ======
 
 	The document:
-	%s\n`
+	%s`
 	message := fmt.Sprintf(template, content)
-	if DEBUG {
-		fmt.Printf(template, "[YOUR DOCUMENT HERE]")
-	}
 	client := openai.NewClient(OPEN_AI_KEY)
 	resp, err := client.CreateChatCompletion(
 		context.Background(),
@@ -176,6 +176,14 @@ func parseGPTOutline(outline string) GPTOutline {
 		}
 	}
 
+	if len(parsedOutline.Slides) == 0 {
+		fmt.Println("Sorry. GPT gave me garbage. I can't do anything with this. Try again?")
+		if DEBUG {
+			fmt.Println(outline)
+		}
+		os.Exit(1)
+	}
+
 	return parsedOutline
 }
 
@@ -187,12 +195,109 @@ func writeToSlides(outline GPTOutline) {
 	if err != nil {
 		panic(err)
 	}
-	presentationId := "1EAYk18WDjIG-zp_0vLm3CsfQh_i8eXc67Jo2O9C6Vuc"
-	presentation, err := slidesService.Presentations.Get(presentationId).Do()
+	// Creating a slideshow will create an empty sldieshow with a single blank
+	// "TITLE" template slide
+	presentation := &slides.Presentation{}
+	presentation.Title = outline.Title
+	presentation, err = slidesService.Presentations.Create(presentation).Do()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(presentation.Title)
+	// Now we can add the slides we need based off of the outline. I don't know
+	// how to add the content of the slides in the same request as the slide
+	// creation so for now we'll just do it in separate pieces.
+	updates := slides.BatchUpdatePresentationRequest{}
+	updates.Requests = make([]*slides.Request, 0)
+	// Each presentation starts with one slide, so we can skip adding a title
+	// slide and go straight to the content slides
+	for range outline.Slides {
+		req := slides.Request{
+			CreateSlide: &slides.CreateSlideRequest{
+				SlideLayoutReference: &slides.LayoutReference{
+					PredefinedLayout: "TITLE_AND_BODY",
+				},
+			},
+		}
+
+		updates.Requests = append(updates.Requests, &req)
+	}
+	// Add an End Slide to Close Everything Out
+	endReq := slides.Request{
+		CreateSlide: &slides.CreateSlideRequest{
+			SlideLayoutReference: &slides.LayoutReference{
+				PredefinedLayout: "TITLE",
+			},
+		},
+	}
+	updates.Requests = append(updates.Requests, &endReq)
+	// Actually submit the updates
+	_, err = slidesService.Presentations.BatchUpdate(presentation.PresentationId, &updates).Do()
+	if err != nil {
+		panic(err)
+	}
+	// It's easier to just re-request the presentation to have the up-to-date
+	// data for the slideshow than it is to mess with this weird nesting data
+	// structure. There's potential for improvements here if I really cared.
+	presentation, err = slidesService.Presentations.Get(presentation.PresentationId).Do()
+	if err != nil {
+		panic(err)
+	}
+	// No we can start the process of adding all of the desired content in a
+	// batched update request
+	contentSlidesLength := len(outline.Slides)
+	updates = slides.BatchUpdatePresentationRequest{}
+	updates.Requests = make([]*slides.Request, 0)
+	// Update the title slide
+	updates.Requests = append(updates.Requests, &slides.Request{
+		InsertText: &slides.InsertTextRequest{
+			ObjectId: presentation.Slides[0].PageElements[0].ObjectId,
+			Text:     outline.Title,
+		},
+	})
+	// Update the content slides
+	for i := 1; i <= contentSlidesLength; i++ {
+		slideOutline := outline.Slides[i-1]
+		slide := presentation.Slides[i]
+		slideParagraph := strings.Join(slideOutline.Bullets, "\n")
+		titleAdd := slides.Request{
+			InsertText: &slides.InsertTextRequest{
+				ObjectId: slide.PageElements[0].ObjectId,
+				Text:     slideOutline.Title,
+			},
+		}
+		textAdd := slides.Request{
+			InsertText: &slides.InsertTextRequest{
+				ObjectId: slide.PageElements[1].ObjectId,
+				Text:     slideParagraph,
+			},
+		}
+		updates.Requests = append(updates.Requests, &titleAdd)
+		updates.Requests = append(updates.Requests, &textAdd)
+	}
+	// Update End slide
+	updates.Requests = append(updates.Requests, &slides.Request{
+		InsertText: &slides.InsertTextRequest{
+			ObjectId: presentation.Slides[len(presentation.Slides)-1].PageElements[0].ObjectId,
+			Text:     "The End",
+		},
+	})
+
+	_, err = slidesService.Presentations.BatchUpdate(presentation.PresentationId, &updates).Do()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Created Presentation: https://docs.google.com/presentation/d/%s/edit\n", presentation.PresentationId)
+}
+
+func buildBaseSlide() *slides.Page {
+	elements := make([]*slides.PageElement, 0)
+	slide := slides.Page{
+		PageType:     "SLIDE",
+		PageElements: elements,
+	}
+
+	return &slide
 }
 
 func getGoogleClient() *http.Client {
@@ -251,4 +356,11 @@ func saveToken(path string, token *oauth2.Token) {
 		fmt.Println("Unable to cache OAuth token")
 	}
 	json.NewEncoder(f).Encode(token)
+}
+
+func runExperiment() {
+	f, _ := os.ReadFile("./exampleOutline.txt")
+	p := parseGPTOutline(string(f))
+	p.Title = fmt.Sprintf("Doctor Slides Test: %s", time.Now())
+	writeToSlides(p)
 }

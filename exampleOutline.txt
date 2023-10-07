@@ -1,0 +1,25 @@
+NEW SLIDE ======
+Title: Waterfall Methodology
+- Up-front design and heavy documentation
+- Nickname for a software development workflow
+- Described by W.W. Royce in 1987
+Image URL: https://example.com/waterfall_image.jpg
+END SLIDE ======
+
+NEW SLIDE ======
+Title: Meetings
+- Team meetings two to three times a week
+- Weekly documentation meetings with Teri, Stan, and Sally
+- Prescribed meetings for each feature set
+Image URL: https://example.com/meetings_image.jpg
+END SLIDE ======
+
+NEW SLIDE ======
+Title: Development Process
+- Requirements Collection meeting
+- Initial Design meeting
+- Documentation Creation meeting
+- Testing Results Finalization meeting
+- Delivery meeting
+Image URL: https://example.com/development_process_image.jpg
+END SLIDE ======
