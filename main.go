@@ -271,8 +271,14 @@ func writeToSlides(outline GPTOutline) {
 				Text:     slideParagraph,
 			},
 		}
+		bulletAdd := slides.Request{
+			CreateParagraphBullets: &slides.CreateParagraphBulletsRequest{
+				ObjectId: slide.PageElements[1].ObjectId,
+			},
+		}
 		updates.Requests = append(updates.Requests, &titleAdd)
 		updates.Requests = append(updates.Requests, &textAdd)
+		updates.Requests = append(updates.Requests, &bulletAdd)
 	}
 	// Update End slide
 	updates.Requests = append(updates.Requests, &slides.Request{
